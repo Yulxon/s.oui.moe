@@ -1,0 +1,31 @@
+---
+- name: Provision Hysteria2, SearXNG, and Scramjet on Debian 13
+  hosts: vultr
+  become: true
+  gather_facts: true
+  pre_tasks:
+    - name: Verify the supported operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Debian'
+          - ansible_facts['distribution_major_version'] | int >= 13
+        fail_msg: This project supports Debian 13 or newer only.
+    - name: Validate required deployment settings
+      ansible.builtin.assert:
+        that:
+          - public_domain | length > 0
+          - acme_email | length > 0
+          - hysteria_auth_password | length >= 16
+          - searxng_secret_key | length >= 32
+          - webvpn_username | length > 0
+          - webvpn_password_hash is match('^\\$2[aby]\\$')
+        fail_msg: >-
+          Set domains and ACME email, plus hysteria_auth_password (16+ chars),
+          searxng_secret_key (32+ chars), webvpn_username, and a bcrypt
+          webvpn_password_hash in vaulted variables.
+  roles:
+    - common
+    - searxng
+    - scramjet
+    - nginx_router
+    - hysteria

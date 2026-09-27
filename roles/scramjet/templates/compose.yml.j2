@@ -1,0 +1,25 @@
+services:
+  scramjet:
+    container_name: scramjet
+    build:
+      context: ./source
+      dockerfile: ../Dockerfile
+    restart: unless-stopped
+    ports:
+      - "{{ scramjet_listen_host }}:{{ scramjet_listen_port }}:8080"
+    volumes:
+      - ./integration/index.js:/app/src/index.js:ro
+      - ./integration/launcher.js:/app/public/index.js:ro
+    networks:
+      webvpn:
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  webvpn:
+    ipam:
+      config:
+        - subnet: {{ scramjet_subnet }}

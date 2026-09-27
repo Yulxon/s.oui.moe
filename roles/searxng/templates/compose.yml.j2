@@ -1,0 +1,15 @@
+services:
+  searxng:
+    image: {{ searxng_image }}
+    restart: unless-stopped
+    ports:
+      - "{{ searxng_bind_address }}:{{ searxng_port }}:8080"
+    volumes:
+      - ./config:/etc/searxng:rw
+      - ./custom/simple/macros.html:/usr/local/searxng/searx/templates/simple/macros.html:ro
+      - searxng-cache:/var/cache/searxng:rw
+    environment:
+      FORCE_OWNERSHIP: "true"
+
+volumes:
+  searxng-cache:

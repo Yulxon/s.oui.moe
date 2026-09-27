@@ -1,0 +1,86 @@
+---
+- name: Install source checkout dependency
+  ansible.builtin.apt:
+    name: git
+    state: present
+
+- name: Create Scramjet integration directory
+  ansible.builtin.file:
+    path: /opt/scramjet/integration
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Update Scramjet-App source from main
+  ansible.builtin.git:
+    repo: "{{ scramjet_repository }}"
+    version: "{{ scramjet_version }}"
+    dest: /opt/scramjet/source
+    update: true
+  register: scramjet_checkout
+
+- name: Install repeatable Scramjet build definition
+  ansible.builtin.template:
+    src: Dockerfile.j2
+    dest: /opt/scramjet/Dockerfile
+    owner: root
+    group: root
+    mode: '0644'
+  register: scramjet_dockerfile
+
+- name: Install Scramjet integration generator
+  ansible.builtin.copy:
+    src: render_integration.py
+    dest: /opt/scramjet/integration/render_integration.py
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Derive launcher and Wisp policy from current source
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /opt/scramjet/integration/render_integration.py
+      - /opt/scramjet/source
+      - /opt/scramjet/integration
+  register: scramjet_integration
+  changed_when: scramjet_integration.stdout == 'changed'
+  when: not ansible_check_mode
+
+- name: Install Scramjet Compose definition
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: /opt/scramjet/compose.yml
+    owner: root
+    group: root
+    mode: '0644'
+  register: scramjet_compose_file
+
+- name: Inspect Scramjet container
+  ansible.builtin.command: docker container inspect scramjet
+  register: scramjet_container
+  failed_when: false
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Build and start Scramjet when inputs change
+  ansible.builtin.command: docker compose -f /opt/scramjet/compose.yml up -d --build
+  register: scramjet_up
+  changed_when: true
+  when: >-
+    not ansible_check_mode and
+    (scramjet_checkout.changed or scramjet_dockerfile.changed or
+     scramjet_integration.changed or
+     scramjet_compose_file.changed or scramjet_container.rc != 0)
+
+- name: Wait for Scramjet local HTTP
+  ansible.builtin.uri:
+    url: "http://{{ scramjet_listen_host }}:{{ scramjet_listen_port }}/"
+    status_code: 200
+  register: scramjet_http
+  retries: 15
+  delay: 2
+  until: scramjet_http.status == 200
+  changed_when: false
+  when: not ansible_check_mode

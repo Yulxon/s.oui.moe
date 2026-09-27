@@ -1,0 +1,5 @@
+.direnv/
+result
+*.retry
+inventory/hosts.yml
+group_vars/vultr/vault.yml

@@ -1,0 +1,30 @@
+---
+# DNS A/AAAA records must point at the Vultr instance before deployment.
+public_domain: s.oui.moe
+searxng_domain: s.oui.moe
+webvpn_domain: web.oui.moe
+acme_email: ylx30130@gmail.com
+
+timezone: America/Los_Angeles
+admin_ssh_port: 22
+
+searxng_image: docker.io/searxng/searxng:latest
+searxng_bind_address: 127.0.0.1
+searxng_port: 8080
+http_router_host: 127.0.0.1
+http_router_port: 8081
+scramjet_listen_host: 127.0.0.1
+scramjet_listen_port: 8082
+scramjet_repository: https://github.com/MercuryWorkshop/Scramjet-App.git
+scramjet_version: main
+# A dedicated Docker bridge makes firewall rules specific to Scramjet.
+scramjet_subnet: 172.30.82.0/24
+searxng_instance_name: SearXNG
+searxng_public_instance: false
+
+# Pin this URL to a versioned official release for production change control.
+# The default follows Hysteria's official latest stable redirect.
+hysteria_arch: amd64  # Change to arm64 for ARM Vultr instances.
+hysteria_download_base_url: https://download.hysteria.network/app/latest
+# UDP port hopping: preserve 443 and add the inclusive 20000–50000 range.
+hysteria_listen_ports: "443,20000-50000"

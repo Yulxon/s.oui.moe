@@ -1,0 +1,9 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart Hysteria
+  ansible.builtin.systemd:
+    name: hysteria-server.service
+    state: restarted

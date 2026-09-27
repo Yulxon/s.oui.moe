@@ -1,0 +1,13 @@
+---
+- name: Validate and reload Nginx
+  ansible.builtin.command: nginx -t
+  changed_when: false
+  listen: nginx router changed
+  when: not ansible_check_mode
+
+- name: Reload Nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+  listen: nginx router changed
+  when: not ansible_check_mode

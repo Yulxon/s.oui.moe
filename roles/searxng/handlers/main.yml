@@ -1,0 +1,5 @@
+---
+- name: Restart SearXNG
+  ansible.builtin.command:
+    cmd: docker compose -f /opt/searxng/compose.yml restart searxng
+  changed_when: true

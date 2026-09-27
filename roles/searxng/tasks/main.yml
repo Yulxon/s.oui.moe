@@ -1,0 +1,85 @@
+---
+- name: Install SearXNG runtime packages
+  ansible.builtin.apt:
+    name:
+      - docker-compose
+      - docker.io
+    state: present
+    update_cache: true
+
+- name: Enable Docker service
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Create SearXNG directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ '977' if item == '/opt/searxng/config' else 'root' }}"
+    group: "{{ '977' if item == '/opt/searxng/config' else 'root' }}"
+    mode: '0755'
+  loop:
+    - /opt/searxng
+    - /opt/searxng/config
+    - /opt/searxng/custom
+    - /opt/searxng/custom/simple
+    - /var/www/letsencrypt
+
+- name: Write SearXNG settings
+  ansible.builtin.template:
+    src: settings.yml.j2
+    dest: /opt/searxng/config/settings.yml
+    # FORCE_OWNERSHIP in the official image uses its runtime UID/GID.
+    owner: '977'
+    group: '977'
+    mode: '0600'
+  register: searxng_settings
+
+- name: Install macro overlay generator
+  ansible.builtin.copy:
+    src: render_macro.py
+    dest: /opt/searxng/render_macro.py
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Write SearXNG compose definition
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: /opt/searxng/compose.yml
+    owner: root
+    group: root
+    mode: '0644'
+  register: searxng_compose_file
+
+- name: Fetch current SearXNG image
+  ansible.builtin.command: docker compose -f /opt/searxng/compose.yml pull searxng
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Derive proxy result macro from current image
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /opt/searxng/render_macro.py
+      - "{{ searxng_image }}"
+      - "{{ searxng_domain }}"
+      - "{{ webvpn_domain }}"
+      - /opt/searxng/custom/simple/macros.html
+  register: searxng_macro
+  changed_when: searxng_macro.stdout == 'changed'
+  when: not ansible_check_mode
+
+- name: Start SearXNG stack
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f /opt/searxng/compose.yml up -d
+      {{ '--force-recreate' if searxng_settings.changed or searxng_macro.changed or searxng_compose_file.changed else '' }}
+  register: searxng_compose
+  changed_when: >-
+    'Started' in (searxng_compose.stdout ~ searxng_compose.stderr) or
+    'Created' in (searxng_compose.stdout ~ searxng_compose.stderr) or
+    'Recreated' in (searxng_compose.stdout ~ searxng_compose.stderr)
+  when: not ansible_check_mode

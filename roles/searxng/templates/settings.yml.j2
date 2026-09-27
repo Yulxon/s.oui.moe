@@ -1,0 +1,44 @@
+use_default_settings: true
+
+general:
+  instance_name: "{{ searxng_instance_name }}"
+
+server:
+  secret_key: "{{ searxng_secret_key }}"
+  bind_address: "0.0.0.0"
+  port: 8080
+  public_instance: {{ searxng_public_instance | bool | lower }}
+  limiter: false
+  image_proxy: true
+
+search:
+  safe_search: 1
+  autocomplete: "duckduckgo"
+  formats:
+    - html
+    - json
+
+plugins:
+  searx.plugins.oa_doi_rewrite.SXNGPlugin:
+    active: true
+
+  searx.plugins.calculator.SXNGPlugin:
+    active: true
+
+  searx.plugins.hash_plugin.SXNGPlugin:
+    active: true
+
+  searx.plugins.self_info.SXNGPlugin:
+    active: true
+
+  searx.plugins.tracker_url_remover.SXNGPlugin:
+    active: true
+
+  searx.plugins.unit_converter.SXNGPlugin:
+    active: true
+
+  searx.plugins.ahmia_filter.SXNGPlugin:
+    active: true
+
+  searx.plugins.hostnames.SXNGPlugin:
+    active: true
