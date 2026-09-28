@@ -17,12 +17,9 @@
           - acme_email | length > 0
           - hysteria_auth_password | length >= 16
           - searxng_secret_key | length >= 32
-          - webvpn_username | length > 0
-          - webvpn_password_hash is match('^\\$2[aby]\\$')
         fail_msg: >-
           Set domains and ACME email, plus hysteria_auth_password (16+ chars),
-          searxng_secret_key (32+ chars), webvpn_username, and a bcrypt
-          webvpn_password_hash in vaulted variables.
+          and searxng_secret_key (32+ chars) in vaulted variables.
   roles:
     - common
     - searxng

@@ -14,8 +14,13 @@
     owner: root
     group: root
     mode: '0755'
+    timeout: 30
     # Set hysteria_download_checksum with a pinned release URL in production.
     checksum: "{{ hysteria_download_checksum | default(omit) }}"
+  register: hysteria_download
+  until: hysteria_download is succeeded
+  retries: 3
+  delay: 5
   notify: Restart Hysteria
 
 - name: Write Hysteria2 server configuration

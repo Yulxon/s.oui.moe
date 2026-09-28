@@ -1,9 +1,7 @@
 ---
-- name: Install Nginx and htpasswd tooling
+- name: Install Nginx
   ansible.builtin.apt:
-    name:
-      - nginx
-      - apache2-utils
+    name: nginx
     state: present
     # Hysteria already owns TCP 80/443; configure loopback listeners first.
     policy_rc_d: 101
@@ -23,15 +21,10 @@
     mode: '0644'
   notify: nginx router changed
 
-- name: Write WebVPN htpasswd
-  ansible.builtin.copy:
-    dest: /etc/nginx/webvpn.htpasswd
-    content: "{{ webvpn_username }}:{{ webvpn_password_hash }}\n"
-    owner: root
-    group: www-data
-    mode: '0640'
-  no_log: true
-  notify: nginx router changed
+- name: Remove obsolete WebVPN htpasswd
+  ansible.builtin.file:
+    path: /etc/nginx/webvpn.htpasswd
+    state: absent
 
 - name: Enable Nginx
   ansible.builtin.systemd:
@@ -57,12 +50,12 @@
   changed_when: false
   when: not ansible_check_mode
 
-- name: Check WebVPN Host requires authentication
+- name: Check WebVPN Host route
   ansible.builtin.uri:
     url: "http://{{ http_router_host }}:{{ http_router_port }}/"
     headers:
       Host: "{{ webvpn_domain }}"
-    status_code: 401
+    status_code: 200
   changed_when: false
   when: not ansible_check_mode
 
