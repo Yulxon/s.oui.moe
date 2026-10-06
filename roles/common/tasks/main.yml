@@ -12,6 +12,7 @@
 - name: Read current system timezone
   ansible.builtin.command: timedatectl show --property=Timezone --value
   register: common_current_timezone
+  check_mode: false
   changed_when: false
 
 - name: Set system timezone
@@ -37,56 +38,31 @@
           iif lo accept
           ip protocol icmp accept
           ip6 nexthdr ipv6-icmp accept
-          # Deny Scramjet's bridge access to host services, including SSH.
-          ip saddr {{ scramjet_subnet }} drop
           tcp dport {{ admin_ssh_port }} accept
           tcp dport { 80, 443 } accept
           udp dport { {{ hysteria_listen_ports }} } accept
         }
         chain forward {
           type filter hook forward priority filter; policy drop;
-          # Wisp must not reach metadata, Docker/host networks, or private IPs.
-          ip saddr {{ scramjet_subnet }} ip daddr {
-            0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8,
-            169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16,
-            198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4
-          } drop
-          # Docker's default bridge networks use 172.16.0.0/12. Permit their
-          # outbound traffic and only established return traffic back in.
+          # Preserve outbound connectivity for unrelated Docker workloads.
           ip saddr 172.16.0.0/12 accept
           ip daddr 172.16.0.0/12 ct state established,related accept
         }
         chain output { type filter hook output priority filter; policy accept; }
       }
-      destroy table ip ansible_nat
-      table ip ansible_nat {
-        chain postrouting {
-          type nat hook postrouting priority srcnat; policy accept;
-          # flush ruleset removes Docker's iptables-managed masquerade rule.
-          # Restore source NAT for Docker default bridge networks.
-          ip saddr 172.16.0.0/12 masquerade
-        }
-      }
   register: common_nftables_config
   notify:
     - Reload nftables
-    - Restart Hysteria
 
 - name: Remove legacy globally managed firewall table  # noqa no-handler
   ansible.builtin.command: nft delete table inet filter
   register: common_legacy_nftables_table
   changed_when: common_legacy_nftables_table.rc == 0
   failed_when: common_legacy_nftables_table.rc not in [0, 1]
-  when: common_nftables_config.changed
+  when: common_nftables_config.changed and not ansible_check_mode
 
-- name: Apply changed firewall rules before Docker provisioning  # noqa no-handler
+- name: Apply changed firewall rules  # noqa no-handler
   ansible.builtin.meta: flush_handlers
-  when: common_nftables_config.changed
-
-- name: Restart Docker after firewall table migration  # noqa no-handler
-  ansible.builtin.systemd:
-    name: docker
-    state: restarted
   when: common_nftables_config.changed
 
 - name: Enable firewall
@@ -94,3 +70,24 @@
     name: nftables
     enabled: true
     state: started
+
+- name: Inspect UFW executable
+  ansible.builtin.stat:
+    path: /usr/sbin/ufw
+  register: common_ufw_binary
+
+- name: Allow required Hysteria ports through existing UFW
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ufw
+      - allow
+      - "{{ item }}"
+  loop:
+    - "{{ admin_ssh_port }}/tcp"
+    - 80/tcp
+    - 443/tcp
+    - 443/udp
+    - "{{ hysteria_listen_ports.split(',')[1] | replace('-', ':') }}/udp"
+  register: common_ufw_rule
+  changed_when: "'Rule added' in common_ufw_rule.stdout or 'Rules updated' in common_ufw_rule.stdout"
+  when: common_ufw_binary.stat.exists and not ansible_check_mode

@@ -30,6 +30,8 @@
     owner: root
     group: root
     mode: '0600'
+  no_log: true
+  diff: false
   notify: Restart Hysteria
 
 - name: Install Hysteria2 systemd unit
@@ -43,9 +45,20 @@
     - Reload systemd
     - Restart Hysteria
 
+- name: Apply Hysteria configuration before starting service
+  ansible.builtin.meta: flush_handlers
+  when: not ansible_check_mode
+
 - name: Enable Hysteria2 service
   ansible.builtin.systemd:
     name: hysteria-server.service
     enabled: true
     state: started
     daemon_reload: true
+
+- name: Wait for Hysteria HTTPS readiness
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 443
+    timeout: 180
+  when: not ansible_check_mode

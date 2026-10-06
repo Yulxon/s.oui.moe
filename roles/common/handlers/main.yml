@@ -3,3 +3,4 @@
   ansible.builtin.systemd:
     name: nftables
     state: reloaded
+  when: not ansible_check_mode

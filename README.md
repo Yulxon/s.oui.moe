@@ -1,60 +1,53 @@
-# Vultr Debian 13：Hysteria2 + SearXNG + Scramjet WebVPN
+# Vultr Debian 13：Hysteria2
 
-本项目用 Ansible 部署：
+本项目只部署 Hysteria2，域名为 `s.oui.moe`。Hysteria 管理 ACME/TLS，监听 TCP 80/443 和 UDP 443,20000-50000，HTTP 自动跳转 HTTPS，伪装反向代理到 `https://priv.au/`，并将 Host 改写为目标站点。
 
-```text
-Hysteria2
-├─ UDP 443,20000-50000 → Hysteria proxy
-└─ TCP 80/443 HTTP/HTTPS masquerade（ACME/TLS）
-        ↓ 127.0.0.1:8081
-      Nginx Host router
-      ├─ s.oui.moe   → 127.0.0.1:8080 SearXNG
-      └─ web.oui.moe → 127.0.0.1:8082 Scramjet-App
-```
-
-`s.oui.moe` 是搜索入口。普通 HTTP/HTTPS 结果的标题仍直接指向原网站；结果下方的 `proxy` 链接在新标签打开 `https://web.oui.moe/?url=<encoded target>`。`web.oui.moe` 是无需密码的 Web proxy 入口。Nginx、SearXNG、Scramjet 只在宿主 loopback 发布端口；Nginx 不管理 TLS。未知 Host 返回 421。
+不再部署 SearXNG、Nginx 或 Scramjet，也不再申请 `web.oui.moe` 证书。迁移任务会移除两个旧 Compose 栈的容器和网络、停止并卸载 Nginx、移除旧部署定义及本项目的 Docker NAT 表。旧应用数据和镜像保留，其他 Docker 工作负载不受管理。
 
 ## 部署准备
 
-1. 将 `s.oui.moe` 和 `web.oui.moe` 的 A/AAAA 记录指向 Vultr 主机。
-2. 在 Vultr Firewall 放行管理 SSH 端口、TCP 80/443、UDP 443/20000-50000。不要放行 8080/8081/8082。
-3. 本机安装 Nix 并运行 `nix develop`，或自行安装 Ansible。
+1. 将 `s.oui.moe` 的 A/AAAA 记录指向 Vultr 主机。可在 DNS 管理端删除不再使用的 `web.oui.moe` 记录。
+2. 在 Vultr Firewall 放行管理 SSH、TCP 80/443、UDP 443/20000-50000。
+3. 运行 `nix develop`，或安装 Ansible 和 `requirements.yml` 中的集合。
 4. 从 `inventory/hosts.yml.example` 创建被 Git 忽略的 `inventory/hosts.yml`。
-5. 从 `group_vars/vultr/vault.yml.example` 创建 Vault 文件，填写 `hysteria_auth_password` 和 `searxng_secret_key`，再运行 `ansible-vault encrypt group_vars/vultr/vault.yml`。明文密码不要写入仓库。
-6. 按需调整 `group_vars/vultr/main.yml` 中的域名、ACME 邮箱及端口。
+5. 从 `group_vars/vultr/vault.yml.example` 创建 Vault 文件，填写 `hysteria_auth_password`，再运行 `ansible-vault encrypt group_vars/vultr/vault.yml`。已有 Vault 可继续使用；旧搜索密钥不再使用。
+6. 按需调整 `group_vars/vultr/main.yml` 中的域名、ACME 邮箱、伪装 URL 及端口。
 
 ```bash
+ansible-playbook site.yml --syntax-check
+ansible-lint site.yml
+git diff --check
 ansible-playbook site.yml --ask-vault-pass --check --diff
 ansible-playbook site.yml --ask-vault-pass
 ansible-playbook site.yml --ask-vault-pass
 ```
 
-Hysteria 客户端仍连接 `s.oui.moe:443`，使用原有认证密码、开启 TLS 校验，并按需配置 `443,20000-50000` UDP port hopping。
+上游未变化时第二次部署应为 `changed=0`。Hysteria 保留官方 `latest` 下载设置，可用固定 release URL 和 checksum 锁定版本。
 
-## 更新策略
+客户端连接 `s.oui.moe:443`，使用原有认证密码、开启 TLS 校验，并按需配置 `443,20000-50000` UDP port hopping。
 
-每次运行 Playbook 都会执行 `docker compose pull searxng`，使用 Docker Hub 的 `searxng/searxng:latest`，并将 Scramjet-App 的本地 checkout 更新到上游 `main`。如果上游内容未变，生成文件和容器不会因此无条件重建；上游更新时则更新相应容器。Hysteria 保留原有 `latest` 下载设置。
+## IPv4 出站补充
 
-SearXNG 的 `ui.templates_path` 指向整棵主题树，不能单独叠加一个文件。[宏生成器](roles/searxng/files/render_macro.py) 从刚拉取的镜像读取当前 `simple/macros.html`，只加入普通结果的 `proxy` 链接，再单文件挂载回容器。Scramjet-App 上游 Dockerfile 当前引用仓库未包含的 `package-lock.json`；本项目用上游 `pnpm-lock.yaml` 构建。[集成生成器](roles/scramjet/files/render_integration.py) 从当前 checkout 生成两个应用层覆盖文件：`public/index.js` 加入 `?url=` 启动，`src/index.js` 配置 Wisp 私网限制，不修改 Scramjet/BareMux/Wisp core。
+此主机没有原生 IPv4 默认路由。`warp_enabled: true` 启用 Cloudflare 官方 Debian 13 WARP 客户端，使用 MASQUE 补充 IPv4 出站；`::/0` 排除规则保留原生 IPv6 和 SSH/Hysteria 入站回复，系统 DNS 不交给 WARP。WARP 在 Hysteria 部署之前配置，注册信息仅保留在服务器 `/var/lib/cloudflare-warp/`。安装禁用推荐包。
 
-上游如果改动关键 macro 或导航接口，生成器会报错，避免把不兼容的旧覆盖文件套在新版本上。使用 `latest` 与 `main` 意味着每次部署可能引入新上游代码；部署后应重新执行主页、`?url=`、搜索结果、WebSocket、私网阻断和站点兼容性测试。查看 Scramjet 实际 commit：`git -C /opt/scramjet/source rev-parse HEAD`；查看 SearXNG 实际镜像：`docker image inspect searxng/searxng:latest --format '{{.Id}}'`。
-
-## 访问控制与网络边界
-
-`web.oui.moe` 不要求密码，任何能访问该域名的人都可以使用这台服务器的公网出口代理浏览。需要限制使用者时，应重新配置访问控制；Scramjet 的私网限制不能替代入口认证。
-
-Scramjet/Wisp 显式禁用直接 IP、私网 IP 和 loopback IP 连接。Scramjet 在专用 Docker 子网 `172.30.82.0/24`，nftables 还阻断该子网到宿主服务、RFC1918、link-local/metadata 和其他保留 IPv4 网段的连接；其公网出口仍由既有 Docker NAT 提供。现有 SearXNG 网桥规则保持不变。Vultr 数据中心 IP 可能在某些站点遇到 CAPTCHA 或额外验证。
-
-浏览器兼容性：用户已验证 Chrome 和 Safari 可使用 WebVPN。Nix 打包的 LibreWolf 在 Scramjet frame 导航时显示浏览器自身的 “Blocked Page” 提示；直连 Scramjet 且 service worker 已激活时仍可复现。此现象与服务器 Wisp 私网拦截不同。
-
-## 检查与维护
+仅配置 WARP：`ansible-playbook site.yml --ask-vault-pass --tags warp`。首次注册自动接受 Cloudflare 客户端服务条款。WARP 出口为共享地址，不提供公网 IPv4 入站。
 
 ```bash
-ssh root@服务器 'systemctl status hysteria-server nginx docker --no-pager'
-ssh root@服务器 'docker compose -f /opt/searxng/compose.yml ps'
-ssh root@服务器 'docker compose -f /opt/scramjet/compose.yml ps'
-ssh root@服务器 'docker compose -f /opt/scramjet/compose.yml logs --tail=100'
-ssh root@服务器 'ss -lntup'
+ssh -F /dev/null root@s.oui.moe 'warp-cli --accept-tos status'
+ssh -F /dev/null root@s.oui.moe 'curl -4 -fsS https://www.cloudflare.com/cdn-cgi/trace'
+ssh -F /dev/null root@s.oui.moe 'curl -6 -fsS https://www.cloudflare.com/cdn-cgi/trace'
 ```
 
-确认 8080/8081/8082 只绑定 `127.0.0.1`；公网仅有管理 SSH、TCP 80/443、UDP 443/20000-50000。检查两个域名证书 SAN、未知 Host 421、WebVPN 无密码访问 200、普通结果 `proxy` 链接、WebSocket upgrade 和 Hysteria 代理/跳端口。使用 Scramjet 尝试访问 `127.0.0.1`、`localhost`、`169.254.169.254`、Docker bridge 和宿主 SSH；均应失败。不要提交 Vault 明文、inventory 或私钥。
+IPv4 应显示 `warp=on`，IPv6 应显示 `warp=off`。临时回退可执行 `warp-cli --accept-tos disconnect` 并停止 `warp-svc`；同时将 `warp_enabled` 改为 `false` 防止重新部署开启，禁用变量本身不会卸载或停止已安装服务。
+
+## 服务检查
+
+```bash
+ssh root@s.oui.moe 'systemctl status hysteria-server --no-pager'
+ssh root@s.oui.moe 'docker ps; ss -lntup'
+curl -I https://s.oui.moe/
+```
+
+确认 Hysteria 活跃、旧容器及 Nginx 已停止、8080/8081/8082 没有监听。检查 `s.oui.moe` 证书 SAN、HTTPS 伪装响应、HTTP 到 HTTPS 跳转及 Hysteria 代理/跳端口。证书缓存中旧域名文件可能仍存在，但配置只申请 `s.oui.moe`。不要提交 Vault 明文、inventory 或私钥。
+
+如果主机预装并启用了 UFW，本项目会同时为 UFW 添加所需端口规则，保持 UFW 启用。仅在 nftables 中放行不能覆盖另一套防火墙的拒绝规则。ACME HTTP-01 要求域名所有有效 A/AAAA 地址的 TCP 80 可达；验证失败可能触发 Let’s Encrypt 限流，应修复网络后等待日志中的 retry-after 时间。Playbook 会等待 TCP 443 就绪，避免仅因 systemd 启动命令成功而误报部署成功。

@@ -1,0 +1,112 @@
+---
+- name: Install WARP repository and verification prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+    state: present
+    install_recommends: false
+
+- name: Install Cloudflare repository signing key
+  ansible.builtin.get_url:
+    url: https://pkg.cloudflareclient.com/pubkey.gpg
+    dest: /usr/share/keyrings/cloudflare-warp.asc
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Configure official Cloudflare Debian repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/cloudflare-client.list
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      deb [signed-by=/usr/share/keyrings/cloudflare-warp.asc] https://pkg.cloudflareclient.com/ {{ ansible_facts['distribution_release'] }} main
+  register: warp_repository
+
+- name: Install Cloudflare WARP without recommended packages
+  ansible.builtin.apt:
+    name: cloudflare-warp
+    state: present
+    install_recommends: false
+    update_cache: "{{ warp_repository.changed }}"
+
+- name: Enable WARP daemon
+  ansible.builtin.systemd:
+    name: warp-svc
+    enabled: true
+    state: started
+
+- name: Configure IPv4 WARP egress
+  when: not ansible_check_mode
+  block:
+    - name: Wait for WARP daemon socket
+      ansible.builtin.wait_for:
+        path: /run/cloudflare-warp/warp_service
+        timeout: 30
+
+    - name: Inspect WARP registration
+      ansible.builtin.stat:
+        path: /var/lib/cloudflare-warp/reg.json
+      register: warp_registration
+
+    - name: Register WARP client
+      ansible.builtin.command: warp-cli --accept-tos registration new
+      when: not warp_registration.stat.exists
+      changed_when: true
+      no_log: true
+
+    - name: Read WARP settings
+      ansible.builtin.command: warp-cli --accept-tos settings
+      register: warp_settings
+      changed_when: false
+
+    # Exclude IPv6 BEFORE changing mode or connecting, preserving SSH replies.
+    - name: Preserve all native IPv6 traffic
+      ansible.builtin.command: warp-cli --accept-tos tunnel ip add-range ::/0
+      when: "'::/0 (CLI exclude)' not in warp_settings.stdout"
+      changed_when: true
+
+    - name: Select traffic tunnel without replacing system DNS
+      ansible.builtin.command: warp-cli --accept-tos mode warp
+      when: "'Mode: Warp\n' not in warp_settings.stdout"
+      changed_when: true
+
+    - name: Select MASQUE tunnel protocol
+      ansible.builtin.command: warp-cli --accept-tos tunnel protocol set MASQUE
+      when: "'WARP tunnel protocol: MASQUE' not in warp_settings.stdout"
+      changed_when: true
+
+    - name: Inspect WARP connection
+      ansible.builtin.command: warp-cli --accept-tos status
+      register: warp_connection
+      changed_when: false
+
+    - name: Connect WARP
+      ansible.builtin.command: warp-cli --accept-tos connect
+      when: "'Status update: Connected' not in warp_connection.stdout"
+      changed_when: true
+
+    - name: Wait for WARP connection
+      ansible.builtin.command: warp-cli --accept-tos status
+      register: warp_connected
+      changed_when: false
+      until: "'Status update: Connected' in warp_connected.stdout"
+      retries: 12
+      delay: 5
+
+    - name: Verify IPv4 egress through WARP
+      ansible.builtin.command:
+        argv:
+          - curl
+          - '-4'
+          - --fail
+          - --silent
+          - --show-error
+          - --max-time
+          - '20'
+          - https://www.cloudflare.com/cdn-cgi/trace
+      register: warp_trace
+      changed_when: false
+      failed_when: "warp_trace.rc != 0 or 'warp=on' not in warp_trace.stdout"

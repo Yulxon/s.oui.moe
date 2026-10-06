@@ -1,0 +1,67 @@
+---
+- name: Inspect retired Compose definitions
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /opt/searxng/compose.yml
+    - /opt/scramjet/compose.yml
+  register: retire_web_compose
+
+- name: Remove retired Compose containers and networks
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ item.item }}"
+      - down
+  register: retire_web_compose_down
+  changed_when: retire_web_compose_down.stderr | length > 0
+  loop: "{{ retire_web_compose.results }}"
+  when: item.stat.exists and not ansible_check_mode
+
+- name: Inspect installed services
+  ansible.builtin.service_facts:
+
+- name: Stop and disable retired Nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: stopped
+    enabled: false
+  when: "'nginx.service' in ansible_facts.services"
+
+- name: Remove retired Nginx packages
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - nginx-common
+    state: absent
+    purge: true
+
+- name: Remove retired deployment definitions
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /opt/searxng/compose.yml
+    - /opt/scramjet/compose.yml
+    - /etc/nginx/conf.d/ansible-router.conf
+    - /etc/nginx/webvpn.htpasswd
+
+- name: Inspect nft executable
+  ansible.builtin.stat:
+    path: /usr/sbin/nft
+  register: retire_web_nft_binary
+
+- name: Inspect legacy Docker NAT table
+  ansible.builtin.command: nft list table ip ansible_nat
+  register: retire_web_nat
+  changed_when: false
+  failed_when: retire_web_nat.rc not in [0, 1]
+  check_mode: false
+  when: retire_web_nft_binary.stat.exists
+
+- name: Remove legacy Docker NAT table
+  ansible.builtin.command: nft delete table ip ansible_nat
+  changed_when: true
+  when: retire_web_nat.rc | default(1) == 0 and not ansible_check_mode

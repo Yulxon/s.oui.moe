@@ -2,4 +2,3 @@
 # Create vault.yml from this file, replace the value, then encrypt it:
 # ansible-vault encrypt group_vars/vultr/vault.yml
 hysteria_auth_password: REPLACE_WITH_RANDOM_PASSWORD
-searxng_secret_key: REPLACE_WITH_RANDOM_SECRET_KEY

@@ -2,8 +2,7 @@ listen: :{{ hysteria_listen_ports }}
 
 acme:
   domains:
-    - {{ searxng_domain }}
-    - {{ webvpn_domain }}
+    - {{ public_domain }}
   email: {{ acme_email }}
   type: http
 
@@ -14,9 +13,9 @@ auth:
 masquerade:
   type: proxy
   proxy:
-    url: http://{{ http_router_host }}:{{ http_router_port }}
-    rewriteHost: false
-    xForwarded: true
+    url: {{ hysteria_masquerade_url }}
+    rewriteHost: true
+    xForwarded: false
   listenHTTP: :80
   listenHTTPS: :443
   forceHTTPS: true
