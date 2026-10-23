@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Serialize local lifecycle runs; forward vault options to Ansible."""
+import fcntl
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+def vault_options(action, options, env, root):
+    explicit = any(
+        option in {"--ask-vault-pass", "--ask-vault-password", "-J",
+                   "--vault-password-file", "--vault-id"}
+        or option.startswith(("--vault-password-file=", "--vault-id="))
+        for option in options
+    )
+    if (action == "up" and env.get("ANSIBLE_VAULT_PASSWORD") and not explicit
+            and not env.get("ANSIBLE_VAULT_PASSWORD_FILE")
+            and not env.get("ANSIBLE_VAULT_IDENTITY_LIST")):
+        return ["--vault-password-file", str(root / "scripts/vault-password")]
+    return []
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in {"up", "down"}:
+        sys.exit("Usage: ./server {up|down} [Ansible options, e.g. --ask-vault-pass]")
+    root = Path(__file__).resolve().parent
+    with (root / ".lifecycle.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.exit("Another lifecycle command is running in this checkout.")
+        result = subprocess.run(
+            ["ansible-playbook", "-i", "localhost,", "lifecycle.yml",
+             *vault_options(sys.argv[1], sys.argv[2:], os.environ, root), *sys.argv[2:],
+             "-e", f"lifecycle_action={sys.argv[1]}"],
+            cwd=root,
+            check=False,
+        )
+        return result.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

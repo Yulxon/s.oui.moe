@@ -4,11 +4,17 @@ acme:
   domains:
     - {{ public_domain }}
   email: {{ acme_email }}
-  type: http
+  type: {{ hysteria_acme_type }}
+{% if hysteria_acme_type == 'dns' %}
+  dns:
+    name: cloudflare
+    config:
+      cloudflare_api_token: {{ hysteria_cloudflare_api_token | to_json }}
+{% endif %}
 
 auth:
   type: password
-  password: "{{ hysteria_auth_password }}"
+  password: {{ hysteria_auth_password | to_json }}
 
 masquerade:
   type: proxy

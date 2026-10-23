@@ -1,0 +1,86 @@
+---
+- name: Discover the public network interface
+  ansible.builtin.setup:
+    gather_subset: [network]
+  delegate_facts: true
+
+- name: Remember the public network interface
+  ansible.builtin.set_fact:
+    lifecycle_public_interface: "{{ hostvars['lifecycle_server'].ansible_facts.default_ipv4.interface }}"
+    lifecycle_ipv6_cidr: >-
+      {{ ready_instance.json.instance.v6_main_ip }}/{{ ready_instance.json.instance.v6_network_size | default(64) }}
+  delegate_to: localhost
+
+- name: Keep router advertisements enabled when Docker enables forwarding
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-ansible-ipv6.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      net.ipv6.conf.{{ lifecycle_public_interface }}.disable_ipv6=0
+      net.ipv6.conf.{{ lifecycle_public_interface }}.accept_ra=2
+      net.ipv6.conf.{{ lifecycle_public_interface }}.autoconf=1
+  register: lifecycle_ipv6_sysctl
+
+- name: Apply IPv6 router advertisement settings  # noqa no-handler
+  ansible.builtin.command:
+    cmd: sysctl --load /etc/sysctl.d/90-ansible-ipv6.conf
+  changed_when: true
+  when: lifecycle_ipv6_sysctl.changed
+
+- name: Read current IPv6 addresses
+  ansible.builtin.command:
+    cmd: "ip -6 -json address show dev {{ lifecycle_public_interface }}"
+  register: lifecycle_ipv6_addresses
+  changed_when: false
+
+- name: Ensure the assigned primary IPv6 address is configured
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -6
+      - address
+      - replace
+      - "{{ lifecycle_ipv6_cidr }}"
+      - dev
+      - "{{ lifecycle_public_interface }}"
+  when: >-
+    ready_instance.json.instance.v6_main_ip not in
+    (lifecycle_ipv6_addresses.stdout | from_json | map(attribute='addr_info') | flatten | map(attribute='local') | list)
+  changed_when: true
+
+- name: Detect existing persistent IPv6 configuration
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import pathlib, re, sys
+        files = [pathlib.Path('/etc/network/interfaces')]
+        files += list(pathlib.Path('/etc/network/interfaces.d').glob('*'))
+        pattern = r'^\s*iface\s+' + re.escape(sys.argv[1]) + r'\s+inet6\s+'
+        found = any(re.search(pattern, p.read_text(), re.M) for p in files if p.is_file())
+        sys.exit(0 if found else 1)
+      - "{{ lifecycle_public_interface }}"
+  register: lifecycle_ipv6_persistent
+  changed_when: false
+  failed_when: lifecycle_ipv6_persistent.rc not in [0, 1]
+
+- name: Persist IPv6 configuration for a migrated Debian instance
+  ansible.builtin.blockinfile:
+    path: /etc/network/interfaces
+    marker: '# {mark} ANSIBLE VULTR IPV6'
+    block: |
+      iface {{ lifecycle_public_interface }} inet6 auto
+          up /usr/sbin/ip -6 address replace {{ lifecycle_ipv6_cidr }} dev {{ lifecycle_public_interface }}
+  when: lifecycle_ipv6_persistent.rc == 1
+
+- name: Verify that an IPv6 route is available
+  ansible.builtin.command:
+    cmd: ip -6 route get 2606:4700:4700::1111
+  register: lifecycle_ipv6_route
+  changed_when: false
+  until: lifecycle_ipv6_route.rc == 0
+  retries: 60
+  delay: 5

@@ -1,0 +1,43 @@
+---
+- name: Remove owned address and alias records before releasing the instance IP
+  ansible.builtin.uri:
+    url: "https://api.cloudflare.com/client/v4/zones/{{ cloudflare_zone_id }}/dns_records/{{ item.id }}"
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ cloudflare_api_token }}"
+  loop: "{{ owned_dns_records }}"
+  register: deleted_dns
+  failed_when: not deleted_dns.json.success
+  no_log: true
+
+- name: Destroy only the instance with the configured label and ownership tag
+  ansible.builtin.uri:
+    url: "https://api.vultr.com/v2/instances/{{ item.id }}"
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ vultr_api_token }}"
+    status_code: [204, 404]
+  loop: "{{ label_instances }}"
+  no_log: true
+
+- name: Confirm the instance has been deleted
+  ansible.builtin.uri:
+    url: "https://api.vultr.com/v2/instances/{{ item.id }}"
+    headers:
+      Authorization: "Bearer {{ vultr_api_token }}"
+    status_code: [200, 404]
+  loop: "{{ label_instances }}"
+  register: deletion_check
+  until: deletion_check.status == 404
+  retries: 60
+  delay: 5
+  no_log: true
+
+- name: Report completion
+  ansible.builtin.debug:
+    msg: >-
+      Deleted {{ label_instances | length }} owned instance(s) and
+      {{ owned_dns_records | length }} owned DNS record(s).
+      Preserved {{ (address_dns_records | length) - (owned_dns_records | length) }}
+      unmanaged address/alias record(s). Local domain settings and vaulted passwords
+      are preserved. Unmanaged records must be reviewed before the next up.

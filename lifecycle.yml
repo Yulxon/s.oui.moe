@@ -1,0 +1,143 @@
+---
+- name: Manage the disposable Vultr server and its DNS
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - group_vars/vultr/main.yml
+    - cloud.yml
+  vars:
+    lifecycle_action: up
+    vultr_api_token: "{{ lookup('ansible.builtin.env', 'VULTR_API_KEY') }}"
+    cloudflare_api_token: "{{ lookup('ansible.builtin.env', 'CLOUDFLARE_API_TOKEN') }}"
+    dns_owner: "ansible-lifecycle:{{ lifecycle_tag }}:{{ lifecycle_label }}"
+  tasks:
+    - name: Validate lifecycle settings before accessing APIs
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - lifecycle_action in ['up', 'down']
+          - vultr_api_token | length > 0
+          - cloudflare_api_token | length > 0
+          - cloudflare_zone_id | length == 32
+          - lifecycle_label | length > 0
+          - lifecycle_tag | length > 0
+          - public_domain | length > 0
+          - admin_ssh_port | int == 22
+        fail_msg: >-
+          Set cloud.yml and both API token environment variables. Lifecycle supports
+          root SSH on port 22; --check is not supported. Use site.yml for deployment checks.
+      no_log: true
+
+    - name: Discover owned resources and validate DNS ownership
+      ansible.builtin.import_tasks: tasks/cloud-discover.yml
+
+    - name: Create or reuse the server
+      ansible.builtin.include_tasks: tasks/cloud-up.yml
+      when: lifecycle_action == 'up'
+
+    - name: Remove DNS and destroy the server
+      ansible.builtin.include_tasks: tasks/cloud-down.yml
+      when: lifecycle_action == 'down'
+
+- name: Run the existing deployment on the discovered server
+  ansible.builtin.import_playbook: site.yml
+  vars:
+    deployment_hosts: lifecycle_target
+
+- name: Verify public HTTPS after deployment
+  hosts: lifecycle_target
+  gather_facts: false
+  tasks:
+    - name: Flush deployment handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for trusted HTTPS and SearXNG on the server over IPv4
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --ipv4
+          - --fail
+          - --silent
+          - --show-error
+          - --noproxy
+          - '*'
+          - --resolve
+          - "{{ public_domain }}:443:127.0.0.1"
+          - --output
+          - /dev/null
+          - --max-time
+          - '10'
+          - "https://{{ public_domain }}/"
+      register: lifecycle_https_local
+      changed_when: false
+      retries: 60
+      delay: 10
+      until: lifecycle_https_local.rc | default(-1) == 0
+
+    - name: Verify trusted HTTPS through the assigned IPv6 address on the server
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --ipv6
+          - --fail
+          - --silent
+          - --show-error
+          - --noproxy
+          - '*'
+          - --resolve
+          - "{{ public_domain }}:443:[{{ lifecycle_ipv6_address }}]"
+          - --output
+          - /dev/null
+          - --max-time
+          - '10'
+          - "https://{{ public_domain }}/"
+      register: lifecycle_https_ipv6
+      changed_when: false
+      retries: 60
+      delay: 10
+      until: lifecycle_https_ipv6.rc == 0
+
+    - name: Check direct public HTTPS independently of server readiness
+      block:
+        - name: Probe the public IPv4 address directly from the control machine
+          ansible.builtin.command:
+            argv:
+              - curl
+              - --ipv4
+              - --fail
+              - --silent
+              - --show-error
+              - --noproxy
+              - '*'
+              - --resolve
+              - "{{ public_domain }}:443:{{ hostvars[inventory_hostname].ansible_host }}"
+              - --output
+              - /dev/null
+              - --connect-timeout
+              - '5'
+              - --max-time
+              - '10'
+              - --write-out
+              - 'HTTP=%{http_code} remote=%{remote_ip}'
+              - "https://{{ public_domain }}/"
+          delegate_to: localhost
+          vars:
+            ansible_connection: local
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"
+          register: lifecycle_https_public
+          changed_when: false
+          retries: "{{ lifecycle_public_https_retries | default(3) | int }}"
+          delay: "{{ lifecycle_public_https_delay | default(5) | int }}"
+          until: lifecycle_https_public.rc | default(-1) == 0
+      rescue:
+        - name: Report a public connectivity failure after successful server checks
+          ansible.builtin.fail:
+            msg: >-
+              Server-side IPv4 and IPv6 HTTPS checks passed, but the control machine's
+              direct public HTTPS probe failed (curl exit {{ lifecycle_https_public.rc | default(-1) }}).
+              {{ lifecycle_https_public.stdout | default('') }}
+              {{ lifecycle_https_public.stderr | default('No curl error output.') }}
+              The probe disables curl proxies with --noproxy '*'. Check the direct route
+              and inbound TCP/443 filtering. Certificate issuance is no longer the pending step.
+              Hysteria UDP reachability still requires a client test.

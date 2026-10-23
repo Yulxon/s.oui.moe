@@ -1,0 +1,5 @@
+# Copy to .envrc.local (ignored by Git), fill in the values, then chmod 600.
+# All three values are stored in plaintext on this machine.
+export VULTR_API_KEY=''
+export CLOUDFLARE_API_TOKEN=''
+export ANSIBLE_VAULT_PASSWORD=''

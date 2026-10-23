@@ -9,7 +9,13 @@ admin_ssh_port: 22
 # Supply IPv4 egress on the IPv6-only host; preserve native IPv6 ingress.
 warp_enabled: true
 
-hysteria_masquerade_url: https://priv.au/
+searxng_image: docker.io/searxng/searxng:latest
+searxng_bind_address: 127.0.0.1
+searxng_port: 8080
+searxng_instance_name: SearXNG
+searxng_public_instance: false
+
+hysteria_masquerade_url: "http://{{ searxng_bind_address }}:{{ searxng_port }}"
 
 # Pin this URL to a versioned official release for production change control.
 # The default follows Hysteria's official latest stable redirect.

@@ -16,7 +16,8 @@
               ansible
               ansible-lint
               yamllint
-              sshpass
+              curl
+              openssh
               python3
             ];
             shellHook = ''

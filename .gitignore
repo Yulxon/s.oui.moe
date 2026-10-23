@@ -1,5 +1,11 @@
 .direnv/
+.ansible/
 result
 *.retry
 inventory/hosts.yml
 group_vars/vultr/vault.yml
+cloud.yml
+.lifecycle.lock
+__pycache__/
+*.py[cod]
+.envrc.local

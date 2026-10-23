@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/config.yaml
 Restart=on-failure
-RestartSec=60s
+RestartSec={{ hysteria_restart_delay }}
 LimitNOFILE=1048576
 
 [Install]

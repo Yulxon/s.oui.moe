@@ -1,0 +1,20 @@
+---
+# Copy to cloud.yml. No API tokens or Hysteria passwords belong in this file.
+vultr_region: lax
+vultr_plan: vc2-1c-1gb
+# Find the Debian 13 x64 OS ID and SSH key UUID in Vultr / via its API.
+# An SSH key name such as id_ed25519 is not a key UUID.
+vultr_os_id: 0
+vultr_ssh_key_ids:
+  - REPLACE_WITH_VULTR_SSH_KEY_ID
+ssh_private_key_file: ~/.ssh/vultr_ed25519
+# Dual-stack instances and A/AAAA DNS are enabled automatically.
+# Optional firewall group: allow TCP 22/80/443 and UDP 443/20000-50000 for BOTH IPv4 and IPv6.
+vultr_firewall_group_id: ""
+cloudflare_zone_id: REPLACE_WITH_ZONE_ID
+# Keep this identity stable. Only instances with BOTH this label and tag are managed.
+lifecycle_label: ansible-hysteria
+lifecycle_tag: ansible-hysteria-managed
+# Set true once to adopt existing A/AAAA records for public_domain.
+# CNAME and duplicate A/AAAA records must be removed manually first.
+adopt_existing_dns: false

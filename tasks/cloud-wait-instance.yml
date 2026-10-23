@@ -1,0 +1,39 @@
+---
+- name: Poll instance readiness while tolerating transient API failures
+  block:
+    - name: Read instance status
+      ansible.builtin.uri:
+        url: "https://api.vultr.com/v2/instances/{{ managed_instance_id }}"
+        headers:
+          Authorization: "Bearer {{ vultr_api_token }}"
+        return_content: true
+        timeout: 20
+      register: instance_poll
+      until:
+        - instance_poll.status | default(-1) | int == 200
+        - instance_poll.json | default(none) is mapping
+        - instance_poll.json.instance | default(none) is mapping
+        - instance_poll.json.instance.status | default('') == 'active'
+        - instance_poll.json.instance.power_status | default('') == 'running'
+        - instance_poll.json.instance.server_status | default('') == 'ok'
+        - instance_poll.json.instance.main_ip | default('', true) not in ['', '0.0.0.0']
+        - >-
+          not (cloud_wait_require_ipv6 | default(false) | bool) or
+          instance_poll.json.instance.v6_main_ip | default('', true) not in ['', '::']
+      retries: "{{ lifecycle_poll_retries | default(90) | int }}"
+      delay: "{{ lifecycle_poll_delay | default(10) | int }}"
+      no_log: true
+  rescue:
+    - name: Report a sanitized instance polling failure
+      ansible.builtin.fail:
+        msg: >-
+          Vultr {{ cloud_wait_phase }} polling failed (HTTP {{ instance_poll.status | default(-1) }}).
+          {{ (instance_poll.json.error | default('No structured API error; the response may be non-JSON or the instance may still be provisioning.'))
+             | string | replace(vultr_api_token, '[REDACTED]')
+             | replace(cloudflare_api_token, '[REDACTED]') }}
+          The instance is retained. Check Vultr before rerunning up; no create request was retried.
+
+- name: Remember the successfully validated instance response
+  ansible.builtin.set_fact:
+    ready_instance: "{{ instance_poll }}"
+  no_log: true

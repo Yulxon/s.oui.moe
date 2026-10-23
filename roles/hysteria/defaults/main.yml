@@ -1,0 +1,6 @@
+---
+# DNS-01 avoids HTTP validation failures while addresses and routes change.
+hysteria_acme_type: dns
+hysteria_cloudflare_api_token: "{{ lookup('ansible.builtin.env', 'CLOUDFLARE_API_TOKEN') }}"
+# Slow down retries after ACME failures instead of requesting every five seconds.
+hysteria_restart_delay: 300s

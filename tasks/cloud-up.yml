@@ -1,0 +1,218 @@
+---
+- name: Load existing deployment secrets before creating a paid instance
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/group_vars/vultr/vault.yml"
+  no_log: true
+
+- name: Validate persistent deployment secrets
+  ansible.builtin.assert:
+    that:
+      - hysteria_auth_password | length >= 16
+      - searxng_secret_key | length >= 32
+      - acme_email | length > 0
+  no_log: true
+
+- name: Validate creation settings
+  ansible.builtin.assert:
+    that:
+      - vultr_region | length > 0
+      - vultr_plan | length > 0
+      - vultr_os_id | int > 0
+      - vultr_ssh_key_ids | length > 0
+      - "'REPLACE_WITH_VULTR_SSH_KEY_ID' not in vultr_ssh_key_ids"
+      - ssh_private_key_file | length > 0
+    fail_msg: Fill in a Debian 13 x64 OS ID, region, plan, registered SSH key IDs and local private key in cloud.yml.
+
+- name: Validate Vultr SSH key UUIDs
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+    fail_msg: >-
+      vultr_ssh_key_ids requires Vultr UUIDs from GET /v2/ssh-keys,
+      not names such as id_ed25519, fingerprints, or local file paths.
+  loop: "{{ vultr_ssh_key_ids }}"
+
+- name: Validate the optional firewall group UUID
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (vultr_firewall_group_id | default('')) or
+        (vultr_firewall_group_id is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'))
+    fail_msg: vultr_firewall_group_id must be empty or a Vultr firewall group UUID.
+
+- name: Check the local SSH private key before creating a server
+  ansible.builtin.stat:
+    path: "{{ ssh_private_key_file | expanduser }}"
+  register: lifecycle_ssh_key
+
+- name: Require the configured private key
+  ansible.builtin.assert:
+    that: lifecycle_ssh_key.stat.exists
+
+# Never retry this POST automatically: a lost response may still have created a server.
+# A subsequent up discovers it by label/tag instead of creating another one.
+- name: Create the owned Vultr instance when absent
+  ansible.builtin.uri:
+    url: https://api.vultr.com/v2/instances
+    method: POST
+    headers:
+      Authorization: "Bearer {{ vultr_api_token }}"
+    body_format: json
+    body:
+      region: "{{ vultr_region }}"
+      plan: "{{ vultr_plan }}"
+      os_id: "{{ vultr_os_id | int }}"
+      sshkey_id: "{{ vultr_ssh_key_ids }}"
+      label: "{{ lifecycle_label }}"
+      tags: ["{{ lifecycle_tag }}"]
+      enable_ipv6: true
+      disable_public_ipv4: false
+      backups: disabled
+      activation_email: false
+      firewall_group_id: "{{ vultr_firewall_group_id | default(omit, true) }}"
+    status_code: 202
+    return_content: true
+  register: created_instance
+  # Keep the full response private, then expose only a redacted API error below.
+  failed_when: false
+  changed_when: created_instance.status | default(-1) == 202
+  when: label_instances | length == 0
+  no_log: true
+
+- name: Report a sanitized Vultr creation error
+  ansible.builtin.fail:
+    msg: >-
+      Vultr create failed (HTTP {{ created_instance.status | default(-1) }}):
+      {{ (created_instance.json.error | default('No structured API error returned; check the Vultr instance list before retrying.'))
+         | string | replace(vultr_api_token, '[REDACTED]')
+         | replace(cloudflare_api_token, '[REDACTED]') }}
+      Requested region={{ vultr_region }}, plan={{ vultr_plan }}, os_id={{ vultr_os_id }}.
+  when:
+    - label_instances | length == 0
+    - created_instance.status | default(-1) != 202
+
+- name: Remember the instance ID
+  ansible.builtin.set_fact:
+    managed_instance_id: >-
+      {{ label_instances[0].id if label_instances | length else created_instance.json.instance.id }}
+
+- name: Wait for the instance to finish provisioning
+  ansible.builtin.include_tasks: cloud-wait-instance.yml
+  vars:
+    cloud_wait_phase: provisioning
+    cloud_wait_require_ipv6: false
+
+- name: Enable IPv6 on an existing IPv4-only instance
+  ansible.builtin.uri:
+    url: "https://api.vultr.com/v2/instances/{{ managed_instance_id }}"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ vultr_api_token }}"
+    body_format: json
+    body:
+      enable_ipv6: true
+    status_code: [200, 202]
+  when: ready_instance.json.instance.v6_main_ip | default('') in ['', '::']
+  register: enabled_ipv6
+  no_log: true
+
+- name: Reboot through Vultr to activate the newly enabled IPv6 network
+  ansible.builtin.uri:
+    url: "https://api.vultr.com/v2/instances/{{ managed_instance_id }}/reboot"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ vultr_api_token }}"
+    status_code: 204
+  when: not enabled_ipv6.skipped | default(false)
+  no_log: true
+
+- name: Wait for SSH to stop during the IPv6 activation reboot
+  ansible.builtin.wait_for:
+    host: "{{ ready_instance.json.instance.main_ip }}"
+    port: 22
+    state: stopped
+    timeout: 60
+  # A quick reboot can complete before this check starts; the next checks still apply.
+  failed_when: false
+  when: not enabled_ipv6.skipped | default(false)
+
+- name: Wait for both public address families
+  ansible.builtin.include_tasks: cloud-wait-instance.yml
+  vars:
+    cloud_wait_phase: dual-stack readiness
+    cloud_wait_require_ipv6: true
+
+- name: Add only this server to the deployment group
+  ansible.builtin.add_host:
+    name: lifecycle_server
+    groups: [vultr, lifecycle_target]
+    ansible_host: "{{ ready_instance.json.instance.main_ip }}"
+    lifecycle_ipv6_address: "{{ ready_instance.json.instance.v6_main_ip }}"
+    ansible_user: root
+    ansible_connection: ssh
+    ansible_port: 22
+    ansible_ssh_private_key_file: "{{ ssh_private_key_file | expanduser }}"
+    # Instance ID avoids collisions when a destroyed server's IP is reused.
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=accept-new -o HostKeyAlias=vultr-{{ managed_instance_id }}
+
+- name: Wait for SSH access
+  ansible.builtin.wait_for_connection:
+    timeout: 600
+    sleep: 10
+  delegate_to: lifecycle_server
+
+- name: Configure and verify IPv6 before publishing its DNS record
+  ansible.builtin.include_tasks:
+    file: cloud-ipv6-network.yml
+    apply:
+      delegate_to: lifecycle_server
+
+- name: Point the stable hostname at both public addresses
+  ansible.builtin.uri:
+    url: >-
+      https://api.cloudflare.com/client/v4/zones/{{ cloudflare_zone_id }}/dns_records{{ '/' ~ item.records[0].id if item.records | length else '' }}
+    method: "{{ 'PUT' if item.records | length else 'POST' }}"
+    headers:
+      Authorization: "Bearer {{ cloudflare_api_token }}"
+    body_format: json
+    body:
+      type: "{{ item.type }}"
+      name: "{{ public_domain }}"
+      content: "{{ item.address }}"
+      proxied: false
+      ttl: 60
+      comment: "{{ dns_owner }}"
+  register: updated_dns
+  failed_when: not updated_dns.json.success
+  loop:
+    - type: A
+      records: "{{ dns_a_records }}"
+      address: "{{ ready_instance.json.instance.main_ip }}"
+    - type: AAAA
+      records: "{{ dns_aaaa_records }}"
+      address: "{{ ready_instance.json.instance.v6_main_ip }}"
+  no_log: true
+
+- name: Inspect the control machine DNS view without blocking deployment
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ playbook_dir }}/scripts/check-dns"
+      - "{{ public_domain }}"
+      - "{{ ready_instance.json.instance.main_ip }}"
+      - "{{ ready_instance.json.instance.v6_main_ip }}"
+  register: dns_resolution
+  changed_when: false
+  failed_when: dns_resolution.rc not in [0, 1]
+
+- name: Report local DNS differences and continue deploying by IP
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Cloudflare A/AAAA updates succeeded, but the control machine resolves different addresses.
+        Deployment continues by IP and DNS-01 does not require this local DNS view to match.
+        Client connections may require clearing DNS caches or checking local DNS/proxy rules.
+      - "{{ dns_resolution.stdout | from_json }}"
+  when: dns_resolution.rc == 1

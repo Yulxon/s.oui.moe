@@ -1,6 +1,6 @@
 ---
-- name: Provision Hysteria2 on Debian 13
-  hosts: vultr
+- name: Provision Hysteria2 and SearXNG on Debian 13
+  hosts: "{{ deployment_hosts | default('vultr') }}"
   become: true
   gather_facts: true
   pre_tasks:
@@ -16,13 +16,14 @@
           - public_domain | length > 0
           - acme_email | length > 0
           - hysteria_auth_password | length >= 16
+          - searxng_secret_key | length >= 32
         fail_msg: >-
-          Set public_domain and ACME email, plus hysteria_auth_password
-          (16+ chars) in vaulted variables.
+          Set public_domain, acme_email, hysteria_auth_password (16+ chars), and
+          searxng_secret_key (32+ chars) in vaulted variables.
   roles:
     - role: warp
       when: warp_enabled | default(false)
       tags: warp
     - common
-    - retire_web
+    - searxng
     - hysteria

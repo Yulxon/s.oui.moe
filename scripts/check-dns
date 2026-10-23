@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Report the control machine's DNS view; return 1 for a mismatch."""
+import argparse
+import ipaddress
+import json
+import socket
+import sys
+
+
+def check_dns(domain, ipv4, ipv6, resolve=socket.getaddrinfo):
+    report = {"domain": domain, "matches": True, "records": {}}
+    for kind, family, expected in (
+        ("A", socket.AF_INET, ipaddress.IPv4Address(ipv4)),
+        ("AAAA", socket.AF_INET6, ipaddress.IPv6Address(ipv6)),
+    ):
+        entry = {"expected": str(expected), "addresses": [], "matches": False}
+        try:
+            addresses = {ipaddress.ip_address(row[4][0])
+                         for row in resolve(domain, 443, family, socket.SOCK_STREAM)}
+            entry["addresses"] = sorted(str(address) for address in addresses)
+            entry["matches"] = addresses == {expected}
+            if kind == "A":
+                entry["fake_ip"] = any(address in ipaddress.ip_network("198.18.0.0/15")
+                                       for address in addresses)
+        except (OSError, ValueError) as exc:
+            entry["error"] = str(exc)
+        report["records"][kind] = entry
+        report["matches"] = report["matches"] and entry["matches"]
+    return report
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("domain")
+    parser.add_argument("ipv4", type=ipaddress.IPv4Address)
+    parser.add_argument("ipv6", type=ipaddress.IPv6Address)
+    args = parser.parse_args()
+    report = check_dns(args.domain, args.ipv4, args.ipv6)
+    print(json.dumps(report, ensure_ascii=False))
+    return 0 if report["matches"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

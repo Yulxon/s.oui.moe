@@ -1,0 +1,118 @@
+---
+- name: Find instances with the configured label
+  ansible.builtin.uri:
+    url: "https://api.vultr.com/v2/instances?per_page=500&label={{ lifecycle_label | urlencode }}"
+    headers:
+      Authorization: "Bearer {{ vultr_api_token }}"
+    return_content: true
+  register: cloud_instances
+  failed_when: false
+  no_log: true
+
+- name: Report a sanitized Vultr discovery error
+  ansible.builtin.fail:
+    msg: >-
+      Vultr instance lookup failed (HTTP {{ cloud_instances.status | default(-1) }}):
+      {{ (cloud_instances.json.error | default('No structured API error returned.'))
+         | string | replace(vultr_api_token, '[REDACTED]')
+         | replace(cloudflare_api_token, '[REDACTED]') }}
+      Check VULTR_API_KEY and Vultr API Access Control for the request's outbound IP,
+      including any proxy/VPN egress. No cloud resources have been changed.
+  when: cloud_instances.status | default(-1) != 200
+
+- name: Require a structured Vultr instance response
+  ansible.builtin.assert:
+    that:
+      - cloud_instances.json | default(none) is mapping
+      - cloud_instances.json.instances | default(none) is sequence
+      - cloud_instances.json.instances is not string
+      - cloud_instances.json.instances is not mapping
+      - cloud_instances.json.meta.total | default(none) is integer
+    fail_msg: Vultr did not return a complete JSON instance list. No cloud resources have been changed.
+
+- name: Require a complete instance lookup
+  ansible.builtin.assert:
+    that:
+      - cloud_instances.json.meta.total | int <= 500
+      - not (cloud_instances.json.meta.links.next | default(''))
+    fail_msg: Instance lookup exceeds one page; refusing to create or delete with incomplete results.
+
+- name: Select exactly the configured label and ownership tag
+  ansible.builtin.set_fact:
+    label_instances: "{{ cloud_instances.json.instances | selectattr('label', 'equalto', lifecycle_label) | list }}"
+  no_log: true
+
+- name: Refuse ambiguous instances or an instance owned by someone else
+  ansible.builtin.assert:
+    that:
+      - label_instances | length <= 1
+      - label_instances | length == 0 or lifecycle_tag in label_instances[0].tags
+    fail_msg: >-
+      The label is duplicated or its instance lacks the ownership tag.
+      Inspect Vultr manually; no instance has been created or destroyed.
+
+- name: Look up all records for the exact hostname
+  ansible.builtin.uri:
+    url: >-
+      https://api.cloudflare.com/client/v4/zones/{{ cloudflare_zone_id }}/dns_records?name={{ public_domain | urlencode }}&per_page=100
+    headers:
+      Authorization: "Bearer {{ cloudflare_api_token }}"
+    return_content: true
+  register: cloud_dns
+  failed_when: false
+  no_log: true
+
+- name: Report a sanitized Cloudflare discovery error
+  ansible.builtin.fail:
+    msg: >-
+      Cloudflare DNS lookup failed (HTTP {{ cloud_dns.status | default(-1) }}):
+      {{ (cloud_dns.json.errors | default([]) | map(attribute='message') | join('; ')
+          | default('No structured API error returned.', true))
+         | replace(vultr_api_token, '[REDACTED]')
+         | replace(cloudflare_api_token, '[REDACTED]') }}
+      Check CLOUDFLARE_API_TOKEN, its zone permissions and cloudflare_zone_id.
+      No cloud resources have been changed.
+  when: cloud_dns.status | default(-1) != 200 or not (cloud_dns.json.success | default(false))
+
+- name: Validate complete DNS response
+  ansible.builtin.assert:
+    that:
+      - cloud_dns.json.success
+      - cloud_dns.json.result_info.total_count | int == cloud_dns.json.result | length
+    fail_msg: Cloudflare returned an unsuccessful or incomplete DNS response.
+
+- name: Select address records
+  ansible.builtin.set_fact:
+    dns_a_records: "{{ cloud_dns.json.result | selectattr('type', 'equalto', 'A') | list }}"
+    dns_aaaa_records: "{{ cloud_dns.json.result | selectattr('type', 'equalto', 'AAAA') | list }}"
+    dns_cname_records: "{{ cloud_dns.json.result | selectattr('type', 'equalto', 'CNAME') | list }}"
+
+- name: Reject conflicting records before creating a paid instance
+  ansible.builtin.assert:
+    that:
+      - dns_a_records | length <= 1
+      - dns_aaaa_records | length <= 1
+      - dns_cname_records | length == 0
+      - >-
+        dns_a_records | length == 0 or
+        (dns_a_records[0].comment | default('', true)) == dns_owner or
+        (lifecycle_action == 'up' and adopt_existing_dns | default(false) | bool)
+      - >-
+        dns_aaaa_records | length == 0 or
+        (dns_aaaa_records[0].comment | default('', true)) == dns_owner or
+        adopt_existing_dns | default(false) | bool
+    fail_msg: >-
+      Remove conflicting CNAME or duplicate A/AAAA records for public_domain.
+      To adopt existing A/AAAA records, set adopt_existing_dns: true for the first up.
+  when: lifecycle_action == 'up'
+
+- name: Select only address and alias records owned by this lifecycle
+  ansible.builtin.set_fact:
+    owned_dns_records: >-
+      {{ cloud_dns.json.result
+         | selectattr('type', 'in', ['A', 'AAAA', 'CNAME'])
+         | selectattr('comment', 'defined')
+         | selectattr('comment', 'equalto', dns_owner) | list }}
+    address_dns_records: >-
+      {{ cloud_dns.json.result
+         | selectattr('type', 'in', ['A', 'AAAA', 'CNAME']) | list }}

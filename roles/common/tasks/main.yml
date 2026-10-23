@@ -9,6 +9,18 @@
     name: "{{ common_base_packages }}"
     state: present
 
+- name: Discover services already installed on this host
+  ansible.builtin.service_facts:
+
+- name: Check the existing UFW firewall
+  ansible.builtin.command:
+    cmd: ufw status
+  environment:
+    LC_ALL: C
+  register: common_ufw_status
+  changed_when: false
+  when: "'ufw.service' in ansible_facts.services"
+
 - name: Read current system timezone
   ansible.builtin.command: timedatectl show --property=Timezone --value
   register: common_current_timezone
@@ -37,7 +49,7 @@
           ct state established,related accept
           iif lo accept
           ip protocol icmp accept
-          ip6 nexthdr ipv6-icmp accept
+          meta l4proto ipv6-icmp accept
           tcp dport {{ admin_ssh_port }} accept
           tcp dport { 80, 443 } accept
           udp dport { {{ hysteria_listen_ports }} } accept
@@ -51,8 +63,7 @@
         chain output { type filter hook output priority filter; policy accept; }
       }
   register: common_nftables_config
-  notify:
-    - Reload nftables
+  notify: Reload nftables
 
 - name: Remove legacy globally managed firewall table  # noqa no-handler
   ansible.builtin.command: nft delete table inet filter
@@ -64,6 +75,40 @@
 - name: Apply changed firewall rules  # noqa no-handler
   ansible.builtin.meta: flush_handlers
   when: common_nftables_config.changed
+
+- name: Apply unchanged managed rules before disabling active UFW  # noqa no-handler
+  ansible.builtin.command:
+    cmd: nft -f /etc/nftables.conf
+  changed_when: true
+  when:
+    - not common_nftables_config.changed
+    - "common_ufw_status.stdout | default('') is search('(?m)^Status: active$')"
+
+- name: Disable conflicting UFW rules after the managed firewall is ready
+  ansible.builtin.command:
+    cmd: ufw --force disable
+  register: common_ufw_disabled
+  changed_when: true
+  when: "common_ufw_status.stdout | default('') is search('(?m)^Status: active$')"
+
+- name: Prevent UFW from restoring conflicting rules on reboot
+  ansible.builtin.systemd:
+    name: ufw
+    enabled: false
+    state: stopped
+  register: common_ufw_service
+  when: "'ufw.service' in ansible_facts.services"
+
+- name: Restart Docker after firewall table migration  # noqa no-handler
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  when:
+    - >-
+      common_nftables_config.changed or
+      common_ufw_disabled.changed | default(false) or
+      common_ufw_service.changed | default(false)
+    - "'docker.service' in ansible_facts.services"
 
 - name: Enable firewall
   ansible.builtin.systemd:

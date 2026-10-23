@@ -1,4 +1,14 @@
 ---
+- name: Validate ACME mode and DNS credentials
+  ansible.builtin.assert:
+    that:
+      - hysteria_acme_type in ['dns', 'http']
+      - hysteria_acme_type != 'dns' or hysteria_cloudflare_api_token | length > 0
+    fail_msg: >-
+      DNS-01 requires CLOUDFLARE_API_TOKEN (Zone Read and DNS Edit), or
+      hysteria_cloudflare_api_token in encrypted Vault variables.
+      Set hysteria_acme_type: http only when public HTTP validation is working.
+
 - name: Create Hysteria configuration directory
   ansible.builtin.file:
     path: /etc/hysteria
